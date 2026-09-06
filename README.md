@@ -1,11 +1,18 @@
 # bitburner
 
-Scripts for [Bitburner](https://github.com/bitburner-official/bitburner-src), written in
-TypeScript on disk and synced into the game over the Remote File API. Based on the
-[official TypeScript template](https://github.com/bitburner-official/typescript-template).
+Learning TypeScript and distributed scheduling by playing
+[Bitburner](https://github.com/bitburner-official/bitburner-src), a game where the gameplay
+*is* writing JavaScript to automate a simulated network of servers.
 
-Writing scripts in the in-game editor works, but you get no version history, no real
-autocomplete, and no way to point another tool at them. This setup fixes all three.
+**This repo is a course, not a script collection.** Every script here exists to teach
+something — a TypeScript concept, a distributed-systems idea, or a constraint the game
+enforces that real infrastructure also enforces but hides. If a script gets replaced by a
+better one, the old one stays in `notes/` as a record of why. Copy-pasted solutions from
+elsewhere don't go in.
+
+Coming from Python? Start with [`notes/typescript.md`](notes/typescript.md) — TypeScript's
+type annotations behave almost exactly like Python's type hints, and most of the rest is
+punctuation.
 
 ## Setup
 
@@ -14,59 +21,63 @@ npm install
 npm run watch
 ```
 
-Then in the game: **Options → Remote API**, port `12525`, **Connect**. The indicator turns
-green, `NetscriptDefinitions.d.ts` lands in this folder (that's the full NS API, typed —
-it's what makes autocomplete work), and everything under `src/` appears on your `home`
-server as compiled `.js`.
+Then in the game: **Options → Remote API**, port `12525`, **Connect**.
 
-Leave `npm run watch` running while you play. Save a file, it's in the game.
-
-Works with both the Steam and web builds.
-
-## What's here
-
-| Script | What it does |
-| --- | --- |
-| `util/map.js` | Prints the whole network: root status, ports needed, hacking level required, max money, RAM. Start here when you don't know what to hack. |
-| `early/deploy.js` | Roots everything it can reach, then fills every rooted server with `grind.js` aimed at the best target you currently qualify for. |
-| `early/grind.js` | The worker: weaken → grow → hack, forever, against one target. Dependency-free so it can be copied onto a 4GB server on its own. |
-
-Typical loop:
+That connection is worth understanding, because it explains the file naming:
 
 ```
-run util/map.js          # see the network
-run early/deploy.js      # root everything, put the whole network to work
+src/util/map.ts  ──tsc──▶  dist/util/map.js  ──filesync──▶  home/util/map.js
+   you write this          types stripped out           what the game runs
 ```
 
-Re-run `deploy.js` whenever your hacking level jumps or you buy a new `.exe` — it kills the
-old workers and re-places them against a better target.
+You edit `.ts`; the compiler deletes every type annotation and writes plain `.js`; the sync
+daemon pushes that into the game. In the game terminal you always type the `.js` name. The
+game also pushes `NetscriptDefinitions.d.ts` back to you — the full API, typed, straight
+from your installed version. That file is the authoritative reference, more so than any
+documentation online.
 
-## Imports
+## The scripts, and what each one is for
 
-Import paths must be absolute from `src/`, with **no leading slash and no file extension**,
-or the game and TypeScript will disagree about what they mean:
+| Script | Run it to | Read it to learn |
+| --- | --- | --- |
+| `util/map.js` | See the whole network: root status, ports needed, hacking level required, money, RAM | TypeScript basics — type annotations, inference, `.map()`/`.sort()` chains, objects vs. dicts |
+| `early/deploy.js` | Root everything reachable and put it all to work | Fan-out over a heterogeneous fleet; why `scp` + `exec` beats config management here |
+| `early/grind.js` | Actually make money | Why workers must stay stupid — RAM is charged *per thread*, so every function you add costs you fleet capacity |
+
+Typical loop: `run util/map.js` to see what you're looking at, then `run early/deploy.js`.
+Re-run `deploy` whenever your hacking level jumps or you buy a new `.exe`.
+
+## The two constraints that shape everything
+
+**RAM is charged per thread.** A script's cost is fixed by which NS functions appear in it —
+whether or not they run — and you pay that cost once per thread. `grind.ts` calls seven NS
+functions and lands around 2.4GB; a worker that only calls `ns.weaken()` costs about 1.75GB.
+Same servers, ~37% more threads. This is why intelligence lives on `home` and workers stay
+dumb, and it's the inverse of normal infrastructure, where the control node is beefy and the
+agents are trivial. Check real costs with `ns.getScriptRam(script, "home")`.
+
+**Imports must be absolute from `src/`, no leading slash, no extension** — otherwise the game
+and TypeScript disagree about what a path means:
 
 ```ts
 import { walk } from "lib/net";   // src/lib/net.ts
 import { NS } from "@ns";         // the game's type definitions
 ```
 
-One gotcha: a script that runs on a *remote* server needs its imports copied there too.
-That's why `grind.ts` imports nothing — `deploy.ts` only has to `scp` one file.
+And a script deployed to a *remote* server needs its imports copied there too, which is why
+`early/grind.ts` imports nothing at all — `deploy.ts` only has to `scp` one file.
 
-## Where this goes next
+## Where this goes
 
-`grind.js` is a proportional loop: every thread independently decides whether to weaken,
-grow, or hack. It's simple and it works, but it wastes most of its time — threads hack a
-server that's already drained, or grow one that's already full.
+See [`notes/progression.md`](notes/progression.md). Short version: proportional hacking (done)
+→ buy RAM instead of Hacknet nodes → HWGW batching, which is the real problem and a genuine
+scheduling exercise.
 
-The real answer is **HWGW batching**: fire hack/weaken/grow/weaken in timed waves so each
-lands exactly when the previous one finishes, keeping the target permanently at max money
-and min security. That's the interesting problem in this game, and it's a genuine
-scheduling exercise. See `notes/progression.md`.
+Standing rule: finished Bitburner automation is downloadable, and downloading it deletes the
+game. Build it, badly, then fix it.
 
 ## Reference
 
-- [NS API docs](https://github.com/bitburner-official/bitburner-src/blob/dev/markdown/bitburner.md) — the full function list with RAM costs
+- [NS API docs](https://github.com/bitburner-official/bitburner-src/blob/dev/markdown/bitburner.md) — every function with its RAM cost
 - [Remote API docs](https://github.com/bitburner-official/bitburner-src/blob/dev/src/Documentation/doc/en/programming/remote_api.md)
-- In-game: `Documentation` in the sidebar, and `help` in the terminal
+- In-game: `Documentation` in the sidebar, `help` in the terminal
