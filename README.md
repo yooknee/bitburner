@@ -36,6 +36,36 @@ game also pushes `NetscriptDefinitions.d.ts` back to you — the full API, typed
 from your installed version. That file is the authoritative reference, more so than any
 documentation online.
 
+### What a working connection looks like
+
+`npm run watch` starts three processes at once — `tsc -w` compiling `src/` into `dist/`, a
+local file watcher, and `bitburner-filesync` holding the WebSocket. Healthy output:
+
+```
+[watch:remote]    Server is ready, running on 12525!
+[watch:transpile] Found 0 errors. Watching for file changes.
+[watch:remote]    lib/net.js changed
+[watch:remote]    early/deploy.js changed
+[watch:remote]    util/map.js changed
+```
+
+Leave it running while you play. Save a file, it's in the game a second later.
+
+The connection is **outbound from the game to you** — the game dials `localhost:12525`, so
+both have to be on the same machine and the game does the connecting. Nothing external can
+set this up for you.
+
+When it doesn't work:
+
+| Symptom | Cause |
+| --- | --- |
+| `Cannot find module '@ns'` before you've ever connected | Expected. `NetscriptDefinitions.d.ts` comes *from* the game — connect once and it appears. |
+| Remote API indicator stays red | The watcher isn't running, or something else holds 12525. Change `port` in `filesync.json` and use the same number in-game. |
+| `EADDRINUSE` on startup | A previous `npm run watch` is still alive. Kill it. |
+| Connects, but no files show up in game | Check `dist/` actually has `.js` files — if `tsc` is reporting errors, nothing gets compiled to push. |
+| Files arrive but the game says the script doesn't exist | You typed the `.ts` name. It's `run util/map.js` in the terminal, always. |
+| Steam version won't connect | Same steps; the Steam build supports RFA too. For devtools, add `--remote-debugging-port=9222` to its launch options. |
+
 ## The scripts, and what each one is for
 
 | Script | Run it to | Read it to learn |
