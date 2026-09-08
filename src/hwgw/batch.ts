@@ -39,10 +39,24 @@ export async function main(ns: NS): Promise<void> {
     return inFlight.reduce((sum, b) => sum + b.ram, 0);
   };
 
+  /**
+   * Placement order: biggest remote server first, home last.
+   *
+   * fleet() returns hosts in BFS order, which puts home first because it's the
+   * seed — and filling home first means the rest of the network sits idle
+   * whenever one batch fits on home alone. Home is the machine to spend last:
+   * the controllers live there and you work there.
+   */
+  const hosts = (): string[] => {
+    const all = fleet(ns);
+    const remote = all.filter((h) => h !== "home").sort((a, b) => freeRam(b) - freeRam(a));
+    return all.includes("home") ? [...remote, "home"] : remote;
+  };
+
   /** Spread `threads` of `script` across the fleet. Returns how many started. */
   const place = (script: string, threads: number, delayMs: number): number => {
     let left = Math.ceil(threads);
-    for (const host of fleet(ns)) {
+    for (const host of hosts()) {
       if (left <= 0) break;
       const fit = Math.floor(freeRam(host) / COST[script]);
       if (fit < 1) continue;
@@ -50,7 +64,9 @@ export async function main(ns: NS): Promise<void> {
       if (host !== "home") ns.scp(script, host, "home");
       // Unique last arg: without it the game rejects a second copy of the same
       // script with the same args on one host, and batches overlap by design.
-      if (ns.exec(script, host, n, target, delayMs, `${Date.now()}-${Math.random()}`) === 0) break;
+      // A host that refuses is skipped, not fatal — one full disk or a race with
+      // another controller must not abort placement across the whole fleet.
+      if (ns.exec(script, host, n, target, delayMs, `${Date.now()}-${Math.random()}`) === 0) continue;
       left -= n;
     }
     return Math.ceil(threads) - left;
