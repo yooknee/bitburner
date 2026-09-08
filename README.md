@@ -70,12 +70,19 @@ When it doesn't work:
 
 | Script | Run it to | Read it to learn |
 | --- | --- | --- |
-| `util/map.js` | See the whole network: root status, ports needed, hacking level required, money, RAM | TypeScript basics — type annotations, inference, `.map()`/`.sort()` chains, objects vs. dicts |
-| `early/deploy.js` | Root everything reachable and put it all to work | Fan-out over a heterogeneous fleet; why `scp` + `exec` beats config management here |
-| `early/grind.js` | Actually make money | Why workers must stay stupid — RAM is charged *per thread*, so every function you add costs you fleet capacity |
+| `util/map.js` | See the network: root status, ports, level required, money, RAM | TypeScript basics — annotations, inference, `.map()`/`.sort()` chains |
+| `util/root.js` | Root everything reachable; writes `rooted.txt` with connect chains | Breadth-first search, and why iterating a depth-limited scan finds nothing new |
+| `util/backdoor.js` | List what you can backdoor now, as paste-ready terminal chains | Path reconstruction from parent links |
+| `util/rank.js` | See what's actually worth hacking, by money/sec/thread | Why max money is a bad proxy, and what the Formulas API is for |
+| `util/plan.js` | See one batch's thread counts, RAM and yield against a target | The arithmetic behind batching |
+| `hwgw/batch.js` | Batch one target | Scheduling under a hard resource constraint |
+| `hwgw/all.js` | Batch as many targets as the fleet can usefully feed | Saturation — why more RAM stops helping past a point |
 
-Typical loop: `run util/map.js` to see what you're looking at, then `run early/deploy.js`.
-Re-run `deploy` whenever your hacking level jumps or you buy a new `.exe`.
+```
+run util/root.js            # root everything
+run util/rank.js            # see what's worth hitting
+run hwgw/all.js 0.10        # put the whole fleet to work
+```
 
 ## The two constraints that shape everything
 
