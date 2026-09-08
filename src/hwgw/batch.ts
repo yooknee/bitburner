@@ -28,9 +28,39 @@ export async function main(ns: NS): Promise<void> {
   const freeRam = (host: string) =>
     ns.getServerMaxRam(host) - ns.getServerUsedRam(host) - (host === "home" ? HOME_RESERVE : 0);
 
-  const fleetFree = () => fleet(ns).reduce((sum, h) => sum + Math.max(0, freeRam(h)), 0);
+  // Discovering the network costs one ns.scan per server, and it barely changes.
+  // At ~1.25 batches/sec across three controllers that was thousands of NS calls
+  // a second, which the game charges real time for — the loop couldn't keep up
+  // with SPACING, so concurrency never reached the level the budget assumed.
+  let fleetCache: string[] = [];
+  let fleetAt = 0;
+  const hosts = (): string[] => {
+    if (Date.now() - fleetAt > 10_000) { fleetCache = fleet(ns); fleetAt = Date.now(); }
+    return fleetCache;
+  };
 
-  // Batches we've launched that haven't finished yet, so we can respect BUDGET
+  interface Slot { host: string; free: number; }
+
+  /**
+   * Snapshot free RAM once per batch, then place all four operations against it.
+   *
+   * Previously each placement re-queried every host and called freeRam inside a
+   * sort comparator — O(n log n) NS calls per operation. Decorating once and
+   * sorting the decorated values is what Python's `key=` does for free.
+   */
+  const snapshot = (): Slot[] => {
+    const slots = hosts()
+      .map((host) => ({ host, free: Math.max(0, freeRam(host)) }))
+      .filter((s) => s.free > 0);
+
+    const remote = slots.filter((s) => s.host !== "home").sort((a, b) => b.free - a.free);
+    const home = slots.filter((s) => s.host === "home");
+    return [...remote, ...home];   // home last: controllers live there, and you work there
+  };
+
+  const fleetFree = (slots: Slot[]) => slots.reduce((sum, s) => sum + s.free, 0);
+
+  // Batches we've launched that haven't finished, so we can respect BUDGET
   // without asking the game what belongs to whom.
   let inFlight: { until: number; ram: number }[] = [];
   const held = () => {
@@ -39,34 +69,25 @@ export async function main(ns: NS): Promise<void> {
     return inFlight.reduce((sum, b) => sum + b.ram, 0);
   };
 
-  /**
-   * Placement order: biggest remote server first, home last.
-   *
-   * fleet() returns hosts in BFS order, which puts home first because it's the
-   * seed — and filling home first means the rest of the network sits idle
-   * whenever one batch fits on home alone. Home is the machine to spend last:
-   * the controllers live there and you work there.
-   */
-  const hosts = (): string[] => {
-    const all = fleet(ns);
-    const remote = all.filter((h) => h !== "home").sort((a, b) => freeRam(b) - freeRam(a));
-    return all.includes("home") ? [...remote, "home"] : remote;
-  };
-
-  /** Spread `threads` of `script` across the fleet. Returns how many started. */
-  const place = (script: string, threads: number, delayMs: number): number => {
+  /** Spread `threads` of `script` across the snapshot. Returns how many started. */
+  const place = (slots: Slot[], script: string, threads: number, delayMs: number): number => {
     let left = Math.ceil(threads);
-    for (const host of hosts()) {
+    for (const slot of slots) {
       if (left <= 0) break;
-      const fit = Math.floor(freeRam(host) / COST[script]);
+      const fit = Math.floor(slot.free / COST[script]);
       if (fit < 1) continue;
+
       const n = Math.min(fit, left);
-      if (host !== "home") ns.scp(script, host, "home");
+      // The worker is already there after the first batch; re-copying is a
+      // wasted NS call on every host, every operation, forever.
+      if (slot.host !== "home" && !ns.fileExists(script, slot.host)) ns.scp(script, slot.host, "home");
+
       // Unique last arg: without it the game rejects a second copy of the same
       // script with the same args on one host, and batches overlap by design.
-      // A host that refuses is skipped, not fatal — one full disk or a race with
-      // another controller must not abort placement across the whole fleet.
-      if (ns.exec(script, host, n, target, delayMs, `${Date.now()}-${Math.random()}`) === 0) continue;
+      // A refusal skips that host rather than abandoning the whole placement.
+      if (ns.exec(script, slot.host, n, target, delayMs, `${Date.now()}-${Math.random()}`) === 0) continue;
+
+      slot.free -= n * COST[script];   // keep the snapshot honest as we fill it
       left -= n;
     }
     return Math.ceil(threads) - left;
@@ -84,11 +105,12 @@ export async function main(ns: NS): Promise<void> {
       const perWeaken = ns.formulas.hacking.weakenEffect(1);
 
       if (overSec > 0.05) {
-        place(W, Math.ceil(overSec / perWeaken), 0);
+        place(snapshot(), W, Math.ceil(overSec / perWeaken), 0);
       } else {
         const grows = Math.ceil(ns.formulas.hacking.growThreads(s, player, s.moneyMax ?? 0));
-        place(G, grows, 0);
-        place(W, Math.ceil(ns.growthAnalyzeSecurity(grows, target) / perWeaken), 0);
+        const slots = snapshot();
+        place(slots, G, grows, 0);
+        place(slots, W, Math.ceil(ns.growthAnalyzeSecurity(grows, target) / perWeaken), 0);
       }
 
       ns.print(`prep: security +${overSec.toFixed(2)}, money ${(100 * (s.moneyAvailable ?? 0) / (s.moneyMax ?? 1)).toFixed(1)}%`);
@@ -119,13 +141,14 @@ export async function main(ns: NS): Promise<void> {
     const p = plan();
     if (!p) { ns.print("target yields nothing at this level."); return; }
 
-    const room = Math.min(fleetFree(), BUDGET - held());
+    const slots = snapshot();
+    const room = Math.min(fleetFree(slots), BUDGET - held());
 
     if (p.ram > room) {
       starved++;
       if (starved % 25 === 1) ns.print(`no room: need ${p.ram.toFixed(0)}GB, have ${room.toFixed(0)}GB`);
     } else {
-      for (const op of p.ops) place(op.script, op.threads, op.delay);
+      for (const op of p.ops) place(slots, op.script, op.threads, op.delay);
       inFlight.push({ until: Date.now() + p.window, ram: p.ram });
       batches++;
       if (batches % 20 === 0) {
