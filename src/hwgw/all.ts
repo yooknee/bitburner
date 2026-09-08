@@ -17,6 +17,23 @@ export async function main(ns: NS): Promise<void> {
   const cost = workerCosts(ns);
   if (Object.values(cost).some((c) => c === 0)) { ns.tprint("ERROR: workers missing from home."); return; }
 
+  // Re-running this is the normal way to resize budgets after buying RAM, so
+  // make it safe: stop existing controllers first. Two controllers on one target
+  // would desync it permanently.
+  //
+  // Their workers are deliberately left alone. A worker does one operation and
+  // exits, so in-flight batches finish instead of being abandoned half-landed —
+  // killing them mid-batch would leave the target hacked but never grown, and
+  // the new controller would have to prep from scratch.
+  let stopped = 0;
+  for (const proc of ns.ps("home")) {
+    if (proc.filename === "hwgw/batch.js" && ns.kill(proc.pid)) stopped++;
+  }
+  if (stopped > 0) {
+    ns.tprint(`stopped ${stopped} controller(s); letting their batches finish`);
+    await ns.sleep(500);
+  }
+
   const controllerRam = ns.getScriptRam("hwgw/batch.js", "home");
   const hosts = fleet(ns);
 
